@@ -35,7 +35,12 @@ build:
 # Run the server locally (debug build). Override env inline, e.g.
 # `BIND_ADDR=127.0.0.1:9000 just run`.
 run:
-    cargo run
+    cargo run -p pastebin
+
+# Send a file to a pastebin server with the CLI, e.g. `just paste notes.txt`.
+# Extra args pass through: `just paste notes.txt --visibility unlisted`.
+paste *ARGS:
+    cargo run -p paste-cli --quiet -- {{ARGS}}
 
 # Remove build artifacts.
 clean:

@@ -4,19 +4,23 @@ FROM rust:1.96-bookworm AS builder
 
 WORKDIR /app
 
-# Cache dependencies: copy manifests first and build a stub so the dependency
-# layer only rebuilds when Cargo.toml/Cargo.lock change.
+# Cache dependencies: copy the workspace manifests first and build stubs so the
+# dependency layer only rebuilds when a Cargo.toml/Cargo.lock changes. Only the
+# `pastebin` server package is built here, so the CLI's deps never compile.
 COPY Cargo.toml Cargo.lock* ./
-RUN mkdir src \
-    && echo 'fn main() {}' > src/main.rs \
-    && echo '' > src/lib.rs \
-    && cargo build --release \
-    && rm -rf src
+COPY server/Cargo.toml server/Cargo.toml
+COPY paste-cli/Cargo.toml paste-cli/Cargo.toml
+RUN mkdir -p server/src paste-cli/src \
+    && echo 'fn main() {}' > server/src/main.rs \
+    && echo '' > server/src/lib.rs \
+    && echo 'fn main() {}' > paste-cli/src/main.rs \
+    && cargo build --release -p pastebin \
+    && rm -rf server/src
 
-# Now copy the real sources and build the actual binary.
-COPY src ./src
+# Now copy the real server sources and build the actual binary.
+COPY server/src ./server/src
 # Touch so cargo notices the changed mtime over the stub.
-RUN touch src/main.rs src/lib.rs && cargo build --release
+RUN touch server/src/main.rs server/src/lib.rs && cargo build --release -p pastebin
 
 # ---- Runtime stage ----
 # SQLite is statically linked via rusqlite's `bundled` feature, so the runtime
