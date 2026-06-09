@@ -47,10 +47,13 @@ clean:
 docker-build:
     docker build -t {{image}}:{{tag}} .
 
-# Run the container locally on port 8080 with a persistent named volume.
+# Uses $SESSION_SECRET if set, otherwise generates a fresh random one for this
+# run (so sessions reset on restart — fine for local use; set the env var to
+# keep them). Never bakes in a known secret.
+# Run the container locally, bound to loopback only, with a persistent volume.
 docker-run: docker-build
-    docker run --rm -p 8080:8080 \
-        -e SESSION_SECRET="${SESSION_SECRET:-change-me-in-prod-please-32+bytes}" \
+    docker run --rm -p 127.0.0.1:8080:8080 \
+        -e SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}" \
         -e PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:8080}" \
         -v pastebin-data:/data \
         {{image}}:{{tag}}
