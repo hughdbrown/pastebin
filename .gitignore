@@ -10,3 +10,5 @@ target/
 *.db
 *.db-shm
 *.db-wal
+# roborev snapshots
+/.roborev/
