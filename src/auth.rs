@@ -9,12 +9,21 @@ use chrono::Utc;
 use rusqlite::{OptionalExtension, params};
 use serde_json::json;
 
-use crate::db::{Conn, Pool};
+use crate::db::{Conn, Pool, db_task};
 use crate::error::AppError;
 use crate::models::{Login, Register, User, row_to_user};
 use crate::validation;
 
-const SESSION_KEY: &str = "uid";
+/// Session cookie key holding the logged-in user's id. Shared so every module
+/// reads/writes the same key.
+pub const SESSION_KEY: &str = "uid";
+
+/// Store the logged-in user's id in the session, mapping write errors.
+pub fn set_session_user(session: &Session, user_id: i64) -> Result<(), AppError> {
+    session
+        .insert(SESSION_KEY, user_id)
+        .map_err(|e| AppError::Internal(format!("session write failed: {e}")))
+}
 
 /// Hash a plaintext password with Argon2 (random per-password salt).
 pub fn hash_password(plaintext: &str) -> Result<String, AppError> {
@@ -81,13 +90,7 @@ pub async fn optional_user(session: &Session, pool: &Pool) -> Result<Option<User
     let Some(id) = uid else {
         return Ok(None);
     };
-    let pool = pool.clone();
-    web::block(move || -> Result<Option<User>, AppError> {
-        let conn = pool.get()?;
-        fetch_user_by_id(&conn, id)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))?
+    db_task(pool, move |conn| fetch_user_by_id(conn, id)).await
 }
 
 /// Like [`optional_user`] but errors with `Unauthorized` when not logged in.
@@ -114,31 +117,22 @@ pub async fn register(
     body: web::Json<Register>,
 ) -> Result<HttpResponse, AppError> {
     let r = body.into_inner();
-    validation::username(&r.username)?;
-    validation::password(&r.password)?;
-    if let Some(email) = &r.email {
-        validation::email(email)?;
-    }
+    validation::registration(&r.username, &r.password, r.email.as_deref())?;
     let password_hash = hash_password(&r.password)?;
 
-    let pool = pool.get_ref().clone();
-    let user = web::block(move || -> Result<User, AppError> {
-        let conn = pool.get()?;
+    let user = db_task(pool.get_ref(), move |conn| {
         let id = insert_user(
-            &conn,
+            conn,
             &r.username,
             r.email.as_deref(),
             &password_hash,
             r.display_name.as_deref(),
         )?;
-        fetch_user_by_id(&conn, id)?.ok_or_else(|| AppError::Internal("user disappeared".into()))
+        fetch_user_by_id(conn, id)?.ok_or_else(|| AppError::Internal("user disappeared".into()))
     })
-    .await
-    .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))??;
+    .await?;
 
-    session
-        .insert(SESSION_KEY, user.id)
-        .map_err(|e| AppError::Internal(format!("session write failed: {e}")))?;
+    set_session_user(&session, user.id)?;
     Ok(HttpResponse::Created().json(&user))
 }
 
@@ -148,25 +142,19 @@ pub async fn login(
     session: Session,
     body: web::Json<Login>,
 ) -> Result<HttpResponse, AppError> {
-    let creds = body.into_inner();
-    let pool2 = pool.get_ref().clone();
-    let username = creds.username.clone();
-    let user = web::block(move || -> Result<Option<User>, AppError> {
-        let conn = pool2.get()?;
-        user_by_username(&conn, &username)
+    let Login { username, password } = body.into_inner();
+    let user = db_task(pool.get_ref(), move |conn| {
+        user_by_username(conn, &username)
     })
-    .await
-    .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))??;
+    .await?;
 
     let user = match user {
-        Some(u) if u.is_active && verify_password(&creds.password, &u.password_hash) => u,
+        Some(u) if u.is_active && verify_password(&password, &u.password_hash) => u,
         // Same error whether the user is missing or the password is wrong.
         _ => return Err(AppError::Unauthorized),
     };
 
-    session
-        .insert(SESSION_KEY, user.id)
-        .map_err(|e| AppError::Internal(format!("session write failed: {e}")))?;
+    set_session_user(&session, user.id)?;
     Ok(HttpResponse::Ok().json(&user))
 }
 

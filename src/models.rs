@@ -56,9 +56,15 @@ impl Paste {
     /// anyone who has the id; private requires the owner.
     pub fn viewable_by(&self, viewer: Option<&User>) -> bool {
         match self.visibility.as_str() {
-            "private" => viewer.map(|u| Some(u.id) == self.user_id).unwrap_or(false),
+            "private" => self.owned_by(viewer.map(|u| u.id)),
             _ => true,
         }
+    }
+
+    /// Whether the paste is owned by the user with id `user_id`. Anonymous
+    /// pastes (`user_id == None`) are owned by nobody.
+    pub fn owned_by(&self, user_id: Option<i64>) -> bool {
+        self.user_id.is_some() && self.user_id == user_id
     }
 }
 

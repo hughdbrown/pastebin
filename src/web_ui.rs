@@ -7,9 +7,9 @@ use actix_session::Session;
 use actix_web::{HttpResponse, http::header, web};
 use serde::Deserialize;
 
-use crate::auth::{hash_password, optional_user, verify_password};
+use crate::auth::{hash_password, optional_user, set_session_user, verify_password};
 use crate::config::Config;
-use crate::db::Pool;
+use crate::db::{Pool, db_task};
 use crate::error::AppError;
 use crate::models::{CreatePaste, Paste, User};
 use crate::pastes::{create_core, get_viewable, list_for_user};
@@ -285,17 +285,27 @@ pub async fn mine_page(pool: web::Data<Pool>, session: Session) -> Result<HttpRe
     Ok(html(layout("My pastes", Some(&user), &body)))
 }
 
-/// `GET /login`
-pub async fn login_page() -> HttpResponse {
-    let body = r#"<h1>Login</h1>
+/// Render the login page body, optionally with an error message above the form.
+fn login_form_html(error: Option<&str>) -> String {
+    let err = error
+        .map(|e| format!(r#"<p class="err">{}</p>"#, escape(e)))
+        .unwrap_or_default();
+    format!(
+        r#"<h1>Login</h1>
+{err}
 <form method="post" action="/login">
   <label for="u">Username</label>
   <input id="u" name="username" required>
   <label for="p">Password</label>
   <input id="p" name="password" type="password" required>
   <p><button type="submit">Login</button></p>
-</form>"#;
-    html(layout("Login", None, body))
+</form>"#
+    )
+}
+
+/// `GET /login`
+pub async fn login_page() -> HttpResponse {
+    html(layout("Login", None, &login_form_html(None)))
 }
 
 /// `POST /login`
@@ -304,37 +314,24 @@ pub async fn login_post(
     session: Session,
     form: web::Form<LoginForm>,
 ) -> Result<HttpResponse, AppError> {
-    let f = form.into_inner();
-    let username = f.username.clone();
-    let pool2 = pool.get_ref().clone();
-    let user = web::block(move || -> Result<Option<User>, AppError> {
-        let conn = pool2.get()?;
-        crate::auth::user_by_username(&conn, &username)
+    let LoginForm { username, password } = form.into_inner();
+    let user = db_task(pool.get_ref(), move |conn| {
+        crate::auth::user_by_username(conn, &username)
     })
-    .await
-    .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))??;
+    .await?;
 
     match user {
-        Some(u) if u.is_active && verify_password(&f.password, &u.password_hash) => {
-            session
-                .insert("uid", u.id)
-                .map_err(|e| AppError::Internal(format!("session write failed: {e}")))?;
+        Some(u) if u.is_active && verify_password(&password, &u.password_hash) => {
+            set_session_user(&session, u.id)?;
             Ok(redirect("/"))
         }
-        _ => {
-            let body = r#"<h1>Login</h1>
-<p class="err">Invalid username or password.</p>
-<form method="post" action="/login">
-  <label for="u">Username</label>
-  <input id="u" name="username" required>
-  <label for="p">Password</label>
-  <input id="p" name="password" type="password" required>
-  <p><button type="submit">Login</button></p>
-</form>"#;
-            Ok(HttpResponse::Unauthorized()
-                .content_type(header::ContentType::html())
-                .body(layout("Login", None, body)))
-        }
+        _ => Ok(HttpResponse::Unauthorized()
+            .content_type(header::ContentType::html())
+            .body(layout(
+                "Login",
+                None,
+                &login_form_html(Some("Invalid username or password.")),
+            ))),
     }
 }
 
@@ -378,39 +375,28 @@ pub async fn register_post(
             ))
     };
 
-    if let Err(AppError::Validation(msg)) = validation::username(&f.username) {
-        return Ok(render_error(&msg, None));
-    }
-    if let Err(AppError::Validation(msg)) = validation::password(&f.password) {
-        return Ok(render_error(&msg, None));
-    }
-    if let Some(e) = &email
-        && let Err(AppError::Validation(msg)) = validation::email(e)
+    if let Err(AppError::Validation(msg)) =
+        validation::registration(&f.username, &f.password, email.as_deref())
     {
         return Ok(render_error(&msg, None));
     }
 
     let password_hash = hash_password(&f.password)?;
-    let pool2 = pool.get_ref().clone();
-    let username = f.username.clone();
-    let created = web::block(move || -> Result<i64, AppError> {
-        let conn = pool2.get()?;
+    let RegisterForm { username, .. } = f;
+    let created = db_task(pool.get_ref(), move |conn| {
         crate::auth::insert_user(
-            &conn,
+            conn,
             &username,
             email.as_deref(),
             &password_hash,
             display_name.as_deref(),
         )
     })
-    .await
-    .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))?;
+    .await;
 
     match created {
         Ok(id) => {
-            session
-                .insert("uid", id)
-                .map_err(|e| AppError::Internal(format!("session write failed: {e}")))?;
+            set_session_user(&session, id)?;
             Ok(redirect("/"))
         }
         Err(AppError::Conflict(msg)) => Ok(render_error(&msg, None)),

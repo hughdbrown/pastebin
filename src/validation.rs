@@ -104,6 +104,17 @@ pub fn email(value: &str) -> Result<(), AppError> {
     }
 }
 
+/// Validate a registration payload: username, password, and optional email.
+/// Shared by the JSON API and the HTML form so both enforce the same rules.
+pub fn registration(name: &str, pass: &str, mail: Option<&str>) -> Result<(), AppError> {
+    username(name)?;
+    password(pass)?;
+    if let Some(m) = mail {
+        email(m)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

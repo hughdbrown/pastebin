@@ -1,5 +1,6 @@
 //! SQLite connection pool and schema migrations.
 
+use actix_web::web;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 
@@ -70,4 +71,23 @@ pub fn init_pool(path: &str) -> Result<Pool, AppError> {
 pub fn run_migrations(conn: &Conn) -> Result<(), AppError> {
     conn.execute_batch(SCHEMA)?;
     Ok(())
+}
+
+/// Run a blocking database closure on the Actix blocking thread pool with a
+/// pooled connection, mapping the pool/join errors to [`AppError`].
+///
+/// This centralizes the `pool.clone()` + `web::block` + connection-checkout +
+/// error-mapping boilerplate that every database-touching handler needs.
+pub async fn db_task<F, T>(pool: &Pool, f: F) -> Result<T, AppError>
+where
+    F: FnOnce(&Conn) -> Result<T, AppError> + Send + 'static,
+    T: Send + 'static,
+{
+    let pool = pool.clone();
+    web::block(move || {
+        let conn = pool.get()?;
+        f(&conn)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("blocking task failed: {e}")))?
 }
