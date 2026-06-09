@@ -1,0 +1,8 @@
+target/
+.git/
+docs/
+*.db
+*.db-wal
+*.db-shm
+.dockerignore
+Dockerfile
