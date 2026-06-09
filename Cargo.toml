@@ -2,5 +2,32 @@
 name = "pastebin"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
+description = "A pastebin web service: create, share, and retrieve text snippets."
+
+[lib]
+name = "pastebin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pastebin"
+path = "src/main.rs"
 
 [dependencies]
+actix-web = "4"
+actix-session = { version = "0.10", features = ["cookie-session"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+argon2 = "0.5"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+tempfile = "3"
+actix-http = "3"

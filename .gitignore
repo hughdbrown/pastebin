@@ -5,3 +5,8 @@ target/
 # Added by cargo
 
 /target
+
+# SQLite runtime artifacts
+*.db
+*.db-shm
+*.db-wal
